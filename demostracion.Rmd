@@ -1,0 +1,257 @@
+---
+title: "Introducción a la protección de datos personales en salud"
+author: "Sabrina López"
+date: "Jornadas Argentinas de Datos y Salud 2023 - 30 Noviembre de 2023"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    toc_depth: 2
+  theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = TRUE)
+```
+
+# Introducción a la protección de datos personales en salud
+
+Este documento es una herramienta que forma parte del Taller de Introducción a la protección de datos personales en salud en las Jornadas Argentinas de Datos y Salud 2023.
+
+Aquí vas a encontar algunas herramientas simples para explorar las posibilidades de procesamiento de los datos con el objetivo de resguardar la privacidad de sus titulares. De ningún modo es un compendio exhaustivo ni las estrategias seleccionadas son necesariamente las mejores.
+
+Se presentarán alternativas en R y python. En la sección de créditos se incluye además un recurso con sugerencias para quienes trabajan con hojas de cálculo.
+
+Para nuevas versiones de este material, no dudes en consultar proximamente en <https://github.com/SLLDeC/>. Esperamos que te sea de utilidad! 
+
+## Preparación
+
+Como primer paso vamos a cargar las bibliotecas y datos necesarios. Es importante recordar que los ambientes de python y de R se van a encontrar separados.
+
+```{r}
+# Necesario para poder trabajar con python
+library(reticulate)
+
+# Necesario para manipular y analizar datos
+library(tidyverse)
+
+# Funciones para anonimizar datos
+library(sdcMicro)
+```
+
+Cargamos los datos para trabajar en R:
+
+```{r carga de datos en R}
+# Carga de la base de muestra para el ambiente de R
+pacientes_muestra <- read_csv("data/muestra_pacientes_taller.csv", 
+                              locale = locale(encoding = "WINDOWS-1252"))
+```
+
+Cargamos los datos y bibliotecas para trabajar en python:
+```{python carga de datos en py}
+# Para manipulación y análisis de datos
+import pandas as pd
+
+# Carga de la base de muestra para el ambiente de python
+pacientes_muestra = pd.read_csv("data/muestra_pacientes_taller.csv", encoding='latin-1')
+```
+
+## Hashing
+
+Se denomina así al proceso que transforma un dato en otra serie de caracteres de longitud fija, sin importar la longitud original de dicho dato. Existen diversos algoritmos que permiten hacer esta transformación. En el ejemplo, se toma como dato de entrada la columna 'nombre_completo' (que luego debería eliminarse), y se utiliza el algoritmo SHA-256 (Secure Hash Algorithm 2) para generar la columna 'nombre_completo_hash'.
+
+En R:
+```{r hashing en R}
+### Se importa la biblioteca
+library(openssl)
+
+pacientes_muestra <- pacientes_muestra %>%
+  mutate(nombre_completo_hash = sha256(nombre_completo))
+```
+
+En python:
+```{python hashing en python}
+### Se importa la librería de hashing
+import hashlib
+
+### Como ejemplo se utiliza un hashing con sha256.
+pacientes_muestra['nombre_completo_hash'] = pacientes_muestra['nombre_completo'].apply(lambda x: x.encode()).apply(hashlib.sha256).apply(lambda x: x.hexdigest())
+```
+
+Podemos comparar los resultados obtenidos mediante R y python: 
+
+```{r comparamos hashing I}
+# Traigo al ambiente de R la variable en python
+resultados_python <- py$pacientes_muestra
+
+# Parametrizo la fila a comparar
+fila = 4
+
+out_r <- paste0('Datos en R:      ', pacientes_muestra$nombre_completo[fila],' -> ', pacientes_muestra$nombre_completo_hash[fila])
+
+out_python <- paste0('\nDatos en python: ', resultados_python$nombre_completo[fila],' -> ', resultados_python$nombre_completo_hash[fila])
+```
+
+Como esperamos, los resultados coinciden
+
+```{r comparamos hashing II}
+cat(out_r,out_python)
+# cat(out_python,out_r,"\n")
+```
+
+## Generalización
+
+Consiste en reemplazar los valores puntuales por valores agrupados, menos específicos. Por ejemplo, una persona que aparece en los registros con la edad puntual de 38 años se la reemplaza por un intervalo que va desde los 30 a los 40 años. La columna 'edad agrupada' es el resultado del proceso de generalización a partir del valor 'edad' que es eliminado del conjunto de datos. Lo que se busca es reducir la granularidad de los datos, dificultando o incluso imposibilitando la recuperación de los valores puntuales asociados con un individuo.
+
+En R:
+```{r generalización en R}
+
+pacientes_muestra <- pacientes_muestra %>% 
+  mutate(edad_agrupada = cut(edad,
+                              breaks = c(0, 18, 30, 45, 60, max(pacientes_muestra$edad)),
+                              include.lowest = T,
+                              labels = c('0-18', '19-30', '31-45', '46-60', '60+')))
+
+# cuento el total de registros por categoría
+totales_edad_agrupada_r <- pacientes_muestra %>% 
+  count(edad_agrupada, name = 'R')
+```
+
+En python:
+
+```{python generalización en python}
+# límites de los grupos
+bins = [0, 18, 30, 45, 60, 125]
+# 
+# # nombre de las categorías
+labels = ['0-18', '19-30', '31-45', '46-60', '60+']
+# 
+pacientes_muestra['edad_agrupada'] = pd.cut(pacientes_muestra['edad'], bins=bins, labels=labels)
+# 
+# # cuento el total de registros por categoría
+totales_edad_agrupada_py = pacientes_muestra.groupby(['edad_agrupada'])['edad_agrupada'].count()
+```
+
+Comparamos los resultados obtenidos:
+
+```{r comparamos generalización}
+# agrego el total de registros por cetgoría en python
+totales_edad_agrupada_r['python'] =  py$totales_edad_agrupada_py
+
+DT::datatable(totales_edad_agrupada_r,
+              options = list(dom = 't'),
+              rownames = FALSE)
+```
+
+## Supresión
+
+La supresión consiste en remover los casos atípicos que por su baja frecuencia no pueden ser unidos en una clase de equivalencia ya sea porque son únicos en su clase (por ej. sólo una persona con edad en el rango de 50-59) o porque al generalizar implicaría ampliar una categoría de forma tal que se vuelve poco informativa (se amplía la categoría 40-49 a 40-60). El registro de la persona con el dato extrema (por ej. 58 años de edad), se remueve del conjunto de datos.
+
+Para eso el primer paso es identificar los valores extremos, esto puede hacerse mediante cualquier estrategia conocida (por ej. rango intercuartílico).
+Por una cuestión de practicidad, vamos a reconocerlos con medidas resumen y box-plot, pero esto es muy dependiente del tipo de datos y el posterior uso que queramos hacer de ellos.
+
+En R:
+
+```{r supresión en R}
+
+ggplot(pacientes_muestra, aes(x=0, y=edad)) +
+    geom_boxplot() +
+    geom_jitter(color="black", size=0.4, alpha=0.9) +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    xlab("")
+
+pacientes_muestra_sup <- pacientes_muestra %>% 
+  filter(edad <= 100)
+
+summary(pacientes_muestra_sup$edad)
+```
+
+En python:
+
+```{python supresión en python}
+# Box Plot
+import seaborn as sns
+sns.boxplot(pacientes_muestra['edad'])
+
+# boxplot_py = sns.swarmplot(x=0, y='edad', data=pacientes_muestra, color="grey")
+
+# boxplot_py
+```
+
+## Perturbación
+
+Este método para anonimizar conjuntos de datos se puede aplicar a las entradas de datos numéricos, y consiste en reemplazar el valor de los atributos con valores aleatorios o partir de un listado, alterando los conjuntos de datos con un valor y una operación específicos. Este método modifica el conjunto de datos original mediante el uso de métodos de redondeo y ruido aleatorio.
+
+En R:
+
+```{r perturbación en R}
+# Cargamos la biblioteca sdcMicro
+library(sdcMicro)
+
+# Parametrizamos el porcentaje de perturbación deseado
+ruido = 10
+
+pacientes_muestra['edad_per'] <- addNoise(pacientes_muestra['edad'], noise = ruido)$xm
+
+# corregimos valores absurdos
+pacientes_muestra <- pacientes_muestra %>% 
+  mutate(edad_per_corr = floor(abs(edad_per)))
+```
+
+En python:
+
+```{python perturbación en python}
+import numpy as np
+
+pd.set_option('display.max_columns', None)
+
+def add_noise(df, column, std = None):
+    if std == None:
+        std = df[column].std()
+    
+    withNoise = df[column].add(np.random.normal(0, std, df.shape[0]))
+    copy = df.copy()
+    copy[column] = withNoise
+    return copy
+
+perturbation = add_noise(pacientes_muestra, 'edad', std=10)
+perturbation.head()
+```
+
+### Créditos
+
+### Python
+
+Reconocimiento de entidades nombradas y hashing:
+
+-   <https://mostly.ai/blog/data-anonymization-in-python>
+-   <https://fund.ar/publicacion/guia-practica-para-la-anonimizacion-de-datos/>
+
+### R
+
+Hashing:
+
+<https://cran.r-project.org/web/packages/openssl/vignettes/crypto_hashing.html>
+
+### Datasets
+
+Datos abiertos - Argentina
+
+-   <https://datos.gob.ar/dataset/otros-nombres-personas-fisicas>
+
+-   [ttps://datos.gob.ar/dataset/renaper-distribucion-apellidos-argentina](https://datos.gob.ar/dataset/renaper-distribucion-apellidos-argentina){.uri}
+
+Datos abiertos - Colombia
+
+-   <https://www.datos.gov.co/Ciencia-Tecnolog-a-e-Innovaci-n/Distribuci-n-de-Diagn-sticos-por-Edades-Dermatolog/ga8i-3ndm>
+
+### Para seguir explorando
+
+-   Reconocimiento de entidades nombradas en texto libre [python] <https://github.com/instituciones-abiertas/anonimizacion-texto-libre>
+
+-   Estrategias para hojas de cálculo <https://www.excel-exercise.com/anonymise-your-data/>
+
+-   Criterios de disociación de datos personales <https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/sites/agencia-gobierno-electronico-sociedad-informacion-conocimiento/files/documentos/noticias/11--criterios-de-disociacion-de-datos-personales.pdf>
